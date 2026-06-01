@@ -1,5 +1,5 @@
 """
-Phase 3 gate: sizing engine tests.
+RiskManager sizing tests: NAV cap, signal gating, and vol regime scalar.
 """
 import sys
 from pathlib import Path
@@ -11,9 +11,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import CONFIG
-from signals.funding_zscore import FundingZScoreSignal
-from signals.filters import SignalFilters
-from risk.sizing import KellySizer
+from signals.pipeline import SignalPipeline
+from risk.manager import RiskManager
 
 
 def _make_enriched_df(n: int = 600) -> pd.DataFrame:
@@ -25,7 +24,7 @@ def _make_enriched_df(n: int = 600) -> pd.DataFrame:
     for i in range(1, n):
         f[i] = 0.0001 + phi * (f[i - 1] - 0.0001) + rng.normal(0, sigma)
     close = 40000 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
-    rvol  = np.where(rng.random(n) < 0.2, 1.5, 0.6)  # 20% high-vol bars
+    rvol  = np.where(rng.random(n) < 0.2, 1.5, 0.6)
 
     df = pd.DataFrame({
         "funding_rate": f,
@@ -42,45 +41,43 @@ def _make_enriched_df(n: int = 600) -> pd.DataFrame:
         "rvol_ann":     rvol,
     }, index=idx)
 
-    engine = FundingZScoreSignal()
-    df = engine.compute_rolling_stats(df)
-    raw = engine.raw_signal(df)
-    sf = SignalFilters()
-    df = sf.apply_all(df, raw)
-    return df
+    sp = SignalPipeline()
+    return sp.run(df)
 
 
 def test_final_size_never_exceeds_nav_cap():
-    df = _make_enriched_df()
-    sizer = KellySizer()
-    out = sizer.compute_sizes(df)
+    risk = RiskManager()
+    out  = risk.compute_sizes(_make_enriched_df())
     assert (out["final_size"] <= CONFIG.NAV_CAP + 1e-9).all(), \
         f"final_size exceeds NAV_CAP: max={out['final_size'].max():.6f}"
 
 
 def test_final_size_zero_when_signal_flat():
-    df = _make_enriched_df()
-    sizer = KellySizer()
-    out = sizer.compute_sizes(df)
-    flat_mask = out["confirmed_signal"] == 0
-    assert (out.loc[flat_mask, "final_size"] == 0.0).all(), \
+    risk = RiskManager()
+    out  = risk.compute_sizes(_make_enriched_df())
+    flat = out["confirmed_signal"] == 0
+    assert (out.loc[flat, "final_size"] == 0.0).all(), \
         "final_size must be 0 wherever confirmed_signal is 0"
 
 
 def test_vol_scaled_less_than_kelly_half_in_high_vol():
-    df = _make_enriched_df()
-    sizer = KellySizer()
-    out = sizer.compute_sizes(df)
-    high_vol = out["rvol_ann"] > CONFIG.VOL_REGIME_THRESH
-    pos_signal = out["confirmed_signal"] != 0
-    mask = high_vol & pos_signal & (out["kelly_half"] > 0)
+    risk = RiskManager()
+    out  = risk.compute_sizes(_make_enriched_df())
+    mask = (out["rvol_ann"] > CONFIG.VOL_REGIME_THRESH) & \
+           (out["confirmed_signal"] != 0) & (out["kelly_half"] > 0)
     if mask.any():
         assert (out.loc[mask, "vol_scaled"] < out.loc[mask, "kelly_half"] + 1e-9).all(), \
             "vol_scaled must be <= kelly_half in high-vol regime"
 
 
 def test_final_size_non_negative():
-    df = _make_enriched_df()
-    sizer = KellySizer()
-    out = sizer.compute_sizes(df)
+    risk = RiskManager()
+    out  = risk.compute_sizes(_make_enriched_df())
     assert (out["final_size"] >= 0.0).all(), "final_size must always be non-negative"
+
+
+def test_circuit_breaker():
+    risk = RiskManager()
+    assert risk.is_halted(nav=840_000, peak_nav=1_000_000) is True,  "Should halt at 16% DD"
+    assert risk.is_halted(nav=900_000, peak_nav=1_000_000) is False, "Should not halt at 10% DD"
+    assert risk.is_halted(nav=1_000_000, peak_nav=0)       is False, "Zero peak — no halt"

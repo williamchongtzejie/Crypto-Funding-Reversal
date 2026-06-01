@@ -1,5 +1,5 @@
 """
-Phase 2 gate: signal engine tests (no API, synthetic data).
+Signal pipeline tests: z-score, raw signal, and all three filters.
 """
 import sys
 from pathlib import Path
@@ -11,8 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import CONFIG
-from signals.funding_zscore import FundingZScoreSignal
-from signals.filters import SignalFilters
+from signals.pipeline import SignalPipeline
 
 
 def _make_df(n: int = 500) -> pd.DataFrame:
@@ -41,10 +40,9 @@ def _make_df(n: int = 500) -> pd.DataFrame:
 
 
 def test_zscore_fires_within_expected_range():
-    df = _make_df()
-    engine = FundingZScoreSignal()
-    df = engine.compute_rolling_stats(df)
-    raw = engine.raw_signal(df)
+    sp  = SignalPipeline()
+    df  = sp.compute_zscore(_make_df())
+    raw = sp.raw_signal(df)
 
     short_pct = 100 * (raw == -1).sum() / len(raw.dropna())
     long_pct  = 100 * (raw ==  1).sum() / len(raw.dropna())
@@ -55,65 +53,59 @@ def test_zscore_fires_within_expected_range():
 
 
 def test_raw_signal_dtype():
-    df = _make_df()
-    engine = FundingZScoreSignal()
-    df = engine.compute_rolling_stats(df)
-    raw = engine.raw_signal(df)
+    sp  = SignalPipeline()
+    df  = sp.compute_zscore(_make_df())
+    raw = sp.raw_signal(df)
     assert raw.dtype == np.int8, f"Expected int8, got {raw.dtype}"
 
 
 def test_filter_outputs_are_bool():
-    df = _make_df()
-    engine = FundingZScoreSignal()
-    df = engine.compute_rolling_stats(df)
-    raw = engine.raw_signal(df)
+    sp  = SignalPipeline()
+    df  = sp.compute_zscore(_make_df())
+    raw = sp.raw_signal(df)
+    out = sp.apply_filters(df, raw)
 
-    sf = SignalFilters()
-    result = sf.apply_all(df, raw)
-
-    assert result["ls_filter_ok"].dtype == bool, "ls_filter_ok must be bool"
-    assert result["basis_filter_ok"].dtype == bool, "basis_filter_ok must be bool"
-    assert result["regime_ok"].dtype == bool, "regime_ok must be bool"
+    assert out["ls_filter_ok"].dtype    == bool, "ls_filter_ok must be bool"
+    assert out["basis_filter_ok"].dtype == bool, "basis_filter_ok must be bool"
+    assert out["regime_ok"].dtype       == bool, "regime_ok must be bool"
 
 
 def test_confirmed_signal_dtype():
-    df = _make_df()
-    engine = FundingZScoreSignal()
-    df = engine.compute_rolling_stats(df)
-    raw = engine.raw_signal(df)
-    sf = SignalFilters()
-    result = sf.apply_all(df, raw)
-    assert result["confirmed_signal"].dtype == np.int8
+    sp  = SignalPipeline()
+    df  = sp.compute_zscore(_make_df())
+    raw = sp.raw_signal(df)
+    out = sp.apply_filters(df, raw)
+    assert out["confirmed_signal"].dtype == np.int8
 
 
 def test_no_lookahead():
-    """
-    Shift confirmed_signal back by 1 and verify it has no correlation
-    to the CURRENT bar's return (only to the NEXT bar's return matters).
-    This is a necessary (not sufficient) no-lookahead check.
-    """
-    df = _make_df(1000)
-    engine = FundingZScoreSignal()
-    df = engine.compute_rolling_stats(df)
-    raw = engine.raw_signal(df)
-    sf = SignalFilters()
-    result = sf.apply_all(df, raw)
+    """confirmed_signal at t should have near-zero correlation with ret at t."""
+    sp  = SignalPipeline()
+    df  = _make_df(1000)
+    df  = sp.compute_zscore(df)
+    raw = sp.raw_signal(df)
+    out = sp.apply_filters(df, raw)
 
-    sig_shifted_back = result["confirmed_signal"].shift(-1)
-    ret = df["ret_8h"]
-    corr = sig_shifted_back.corr(ret)
+    corr = out["confirmed_signal"].shift(-1).corr(df["ret_8h"])
     assert abs(corr) < 0.25, f"Potential lookahead: signal(t+1) corr with ret(t) = {corr:.3f}"
 
 
 def test_filters_never_generate_signals():
-    """Confirmed signal must always be a strict subset of raw signal."""
-    df = _make_df()
-    engine = FundingZScoreSignal()
-    df = engine.compute_rolling_stats(df)
-    raw = engine.raw_signal(df)
-    sf = SignalFilters()
-    result = sf.apply_all(df, raw)
+    """confirmed_signal must be a strict subset of raw_signal."""
+    sp  = SignalPipeline()
+    df  = sp.compute_zscore(_make_df())
+    raw = sp.raw_signal(df)
+    out = sp.apply_filters(df, raw)
 
-    raw_flat  = result["raw_signal"] == 0
-    conf_nonflat = result["confirmed_signal"] != 0
+    raw_flat     = out["raw_signal"] == 0
+    conf_nonflat = out["confirmed_signal"] != 0
     assert not (raw_flat & conf_nonflat).any(), "Filters generated a signal where raw was 0"
+
+
+def test_run_returns_all_columns():
+    """SignalPipeline.run() must produce all required signal columns."""
+    sp  = SignalPipeline()
+    out = sp.run(_make_df())
+    for col in ["funding_zscore", "raw_signal", "confirmed_signal",
+                "ls_filter_ok", "basis_filter_ok", "regime_ok"]:
+        assert col in out.columns, f"Missing column: {col}"

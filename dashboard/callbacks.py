@@ -344,8 +344,8 @@ def register(app):
         Falls back to placeholder values when not connected.
         """
         try:
-            from live import signal_monitor
-            live_state = signal_monitor.get_live_state()
+            from live.trader import get_live_state
+            live_state = get_live_state()
         except Exception:
             live_state = {}
 

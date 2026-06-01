@@ -28,7 +28,7 @@ def create_app() -> Dash:
         external_stylesheets=[dbc.themes.DARKLY],
         suppress_callback_exceptions=True,
     )
-    app.title = "Strategy 3 — Funding Rate Mean Reversion"
+    app.title = "Crypto Funding Reversal"
 
     app.layout = dbc.Container(
         fluid=True,
@@ -36,7 +36,7 @@ def create_app() -> Dash:
             dbc.Row([
                 dbc.Col(
                     html.H4(
-                        "Strategy 3 — Funding Rate Mean Reversion",
+                        "Crypto Funding Reversal",
                         className="my-3 text-white",
                     ),
                     width=10,

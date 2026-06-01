@@ -1,12 +1,12 @@
 """
-Live execution entry point for Strategy 3 — Funding Rate Mean Reversion.
+Live execution entry point for the Crypto Funding Reversal strategy.
 
 Usage:
   python run_live.py
 
 Requires:
   .env file with BINANCE_API_KEY and BINANCE_API_SECRET
-  API keys with USDT-margined futures trading permissions (not spot)
+  Binance account with USDT-margined futures trading permissions
 """
 import asyncio
 import logging
@@ -18,7 +18,6 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
 
-# Load environment variables from .env
 try:
     from dotenv import load_dotenv
     load_dotenv(BASE_DIR / ".env")
@@ -36,40 +35,37 @@ logging.basicConfig(
 logger = logging.getLogger("run_live")
 
 from config import CONFIG
+from strategy import FundingReversalStrategy
 from data.websocket_feed import BinanceLiveFeed
-from live.order_manager import OrderManager
-from live.signal_monitor import SignalMonitor
 
 
 async def main():
-    logger.info("Strategy 3 Live Execution starting")
+    logger.info("Crypto Funding Reversal — Live Execution starting")
     logger.info("Symbols: %s", CONFIG.symbols)
 
-    api_key    = os.environ.get("BINANCE_API_KEY", "")
-    api_secret = os.environ.get("BINANCE_API_SECRET", "")
-    if not api_key or not api_secret:
+    if not os.environ.get("BINANCE_API_KEY") or not os.environ.get("BINANCE_API_SECRET"):
         logger.error("BINANCE_API_KEY and BINANCE_API_SECRET must be set in .env")
         sys.exit(1)
 
-    order_manager  = OrderManager(cfg=CONFIG)
-    signal_monitor = SignalMonitor(order_manager=order_manager, cfg=CONFIG)
+    strategy = FundingReversalStrategy()
+    trader   = strategy.create_live_trader()
 
     feed = BinanceLiveFeed(
-        symbols             = CONFIG.symbols,
-        cfg                 = CONFIG,
-        on_settlement       = signal_monitor.on_settlement,
-        on_mark_price_tick  = signal_monitor.on_mark_price_tick,
+        symbols            = CONFIG.symbols,
+        cfg                = CONFIG,
+        on_settlement      = trader.on_settlement,
+        on_mark_price_tick = trader.on_mark_price_tick,
     )
 
     loop = asyncio.get_running_loop()
 
     def _graceful_shutdown(signum, frame):
         logger.info("Shutdown signal received — closing all positions")
-        for symbol in CONFIG.symbols:
+        for sym in CONFIG.symbols:
             try:
-                order_manager.exit(symbol, reason="manual_shutdown")
+                trader._exit(sym, reason="manual_shutdown")
             except Exception as exc:
-                logger.error("Error closing %s: %s", symbol, exc)
+                logger.error("Error closing %s: %s", sym, exc)
         feed.stop()
         loop.stop()
 
