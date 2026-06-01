@@ -1,4 +1,4 @@
-# Strategy 3 — Funding Rate Mean Reversion
+# Crypto Funding Reversal
 
 A systematic, market-neutral strategy that exploits the mean-reverting behaviour of Binance perpetual futures funding rates. When funding rates deviate sharply from their historical norm, levered participants face forced liquidations and position reductions, producing a predictable price response. This strategy captures that reversion with strict risk controls and exits before the signal decays.
 
@@ -47,15 +47,15 @@ The strategy is inherently **market-neutral**: it trades the relative dislocatio
 | Bar frequency | 8 hours (aligned to funding settlement) |
 | Signal | 90-bar rolling z-score of funding rate |
 | Entry (SHORT) | z-score > +2.0 σ |
-| Entry (LONG) | z-score < −1.5 σ |
-| Exit trigger | \|z-score\| < 0.5 σ, ATR stop, time stop, or max-loss backstop |
+| Entry (LONG) | z-score < -1.5 σ |
+| Exit trigger | z-score within ±0.5 σ, ATR stop, time stop, or max-loss backstop |
 | Position size | Half-Kelly with 2% NAV hard cap |
 | Max drawdown limit | 15% (circuit breaker) |
 | Backtest period | IS: 2020–2022 · OOS: 2023–2024 |
 | Initial capital | $1,000,000 USDT |
 | Cost assumption | 7 bps per side (5 bps taker fee + 2 bps slippage) |
 
-The asymmetric entry thresholds (+2.0 σ short, −1.5 σ long) reflect the empirically stronger and faster mean reversion from extreme positive funding, which is the dominant regime in bull markets. The lower threshold for longs provides more frequent entries when negative funding is comparatively rarer.
+The asymmetric entry thresholds (+2.0 σ short, -1.5 σ long) reflect the empirically stronger and faster mean reversion from extreme positive funding, which is the dominant regime in bull markets. The lower threshold for longs provides more frequent entries when negative funding is comparatively rarer.
 
 ---
 
@@ -65,7 +65,7 @@ The asymmetric entry thresholds (+2.0 σ short, −1.5 σ long) reflect the empi
 
 For each 8-hour bar $t$, compute the rolling z-score over the previous $W = 90$ bars (30 days):
 
-$$z_t = \frac{f_t - \mu_t}{\max(\sigma_t, \varepsilon)}$$
+$$z_t = \frac{f_t - \mu_t}{\max(\sigma_t,\ \varepsilon)}$$
 
 where:
 - $f_t$ = funding rate at settlement $t$
@@ -78,8 +78,8 @@ where:
 
 | Condition | Signal |
 |---|---|
-| $z_t > +2.0$ | −1 (SHORT) |
-| $z_t < −1.5$ | +1 (LONG) |
+| $z_t > +2.0$ | -1 (SHORT) |
+| $z_t < -1.5$ | +1 (LONG) |
 | otherwise | 0 (FLAT) |
 
 In normal markets, the SHORT signal fires on roughly 2–5% of bars. The LONG signal is rarer, concentrated in crypto bear markets or capitalisation events.
@@ -93,7 +93,7 @@ All features are computed from the master DataFrame after forward-filling price 
 | `ret_8h` | log(close / close.shift(1)) | Return per bar |
 | `atr_8h` | EWM span-14 on True Range | ATR stop distance |
 | `rvol_ann` | 90-bar rolling std(ret_8h) × √1095 | Regime volatility |
-| `basis` | (mark_close − index_close) / index_close | Perp-spot premium |
+| `basis` | (mark_close - index_close) / index_close | Perp-spot premium |
 
 ---
 
@@ -134,20 +134,23 @@ The strategy uses **half-Kelly** sizing with a binary volatility regime scalar a
 
 ### 5.1 Kelly Estimation
 
-The signal return series (lag-1 to prevent look-ahead):
+Let $\delta_t$ denote the confirmed signal at bar $t$ (values: -1, 0, +1). The signal return series uses a one-bar lag to prevent look-ahead bias:
 
-$$r^{sig}_t = \text{confirmed\_signal}_{t-1} \times r^{8h}_t$$
+$$r^{sig}_t = \delta_{t-1} \times r^{8h}_t$$
 
 Using a 180-bar (60-day) rolling window:
 
-$$f^* = \frac{\mu_{sig}}{\sigma^2_{sig}} \quad \text{clipped to} \quad [0,\ 0.20]$$
+$$f^* = \frac{\mu_{sig}}{\sigma^2_{sig}}, \quad \text{clipped to } [0,\ 0.20]$$
 
 ### 5.2 Half-Kelly and Volatility Scalar
 
-$$\text{size} = \min\!\left( \frac{f^*}{2} \times s_{vol},\ 2\% \right)$$
+$$\text{size} = \min\left( \frac{f^*}{2} \times s_{vol},\ 0.02 \right)$$
 
-where the binary volatility scalar:
-$$s_{vol} = \begin{cases} 0.5 & \text{if } \text{rvol\_ann} > 1.20 \\ 1.0 & \text{otherwise} \end{cases}$$
+where $s_{vol}$ is a binary volatility regime scalar:
+
+$$s_{vol} = \begin{cases} 0.5 & \text{if } \sigma_{ann} > 1.20 \\ 1.0 & \text{otherwise} \end{cases}$$
+
+Here $\sigma_{ann}$ is the 90-bar rolling annualised realised volatility (`rvol_ann` in code). The scalar halves the position size whenever crypto volatility is running above 120% annualised.
 
 ### 5.3 Summary
 
@@ -171,17 +174,17 @@ Four exit conditions are checked every bar in strict priority order:
 
 | Priority | Exit | Condition | Rationale |
 |---|---|---|---|
-| 0 | Max Loss | cumulative PnL < −4% of notional | Backstop: thesis is wrong, cut losses |
+| 0 | Max Loss | cumulative PnL < -4% of notional | Backstop: thesis is wrong, cut losses |
 | 1 | ATR Stop | adverse move > 2 × ATR at entry | Hard structural stop based on volatility at entry |
-| 2 | Z-Revert | \|z-score\| < 0.5 | Signal thesis fulfilled |
-| 3 | Time Stop | bars held ≥ 6 (48 hours) | Thesis decay: funding reverts or signal stales |
+| 2 | Z-Revert | abs(z-score) < 0.5 | Signal thesis fulfilled |
+| 3 | Time Stop | bars held >= 6 (48 hours) | Thesis decay: funding reverts or signal stales |
 
 All exits are executed at the bar close (mark price). No partial exits. If still in position at end of data, the position is closed with reason `end_of_data`.
 
 **P&L Accounting per bar while in position:**
 
-- Price PnL: `position × (mark_close − prev_mark_close) / prev_mark_close × notional`
-- Funding PnL: `−position × funding_rate × notional` (paid TO the strategy when short in high-funding regime)
+- Price PnL: `position × (mark_close - prev_mark_close) / prev_mark_close × notional`
+- Funding PnL: `-position × funding_rate × notional` (paid TO the strategy when short in high-funding regime)
 
 ---
 
@@ -231,14 +234,12 @@ All results use $1M initial capital, BTCUSDT, 2020–2024.
 |---|---|---|
 | Total Return | +0.80% | +0.60% |
 | Annualised Return | +0.26% | +0.30% |
-| Annualised Volatility | — | — |
 | **Sharpe Ratio** | **0.74** | **1.27** |
 | Sortino Ratio | 0.31 | 0.77 |
 | Calmar Ratio | 0.74 | 1.63 |
-| **Max Drawdown** | **−0.36%** | **−0.18%** |
-| Max DD Duration | — | — |
+| **Max Drawdown** | **-0.36%** | **-0.18%** |
 | Beta to BTC | 0.000 | 0.000 |
-| Funding Fraction | 0.63% | −1.20% |
+| Funding Fraction | 0.63% | -1.20% |
 | Total Trades | 72 | 51 |
 | **Win Rate** | **54.2%** | **64.7%** |
 | **Profit Factor** | **1.52** | **2.34** |
@@ -255,9 +256,9 @@ All results use $1M initial capital, BTCUSDT, 2020–2024.
 
 **Profit factor 1.52 IS / 2.34 OOS** confirms positive expectancy with improving edge in the OOS period, likely because 2023–2024 produced cleaner, more tradeable funding spikes than the chaotic 2022 deleveraging events.
 
-### 9.3 Phase Gates Passed
+### 9.3 Validation Gates Passed
 
-- **Phase 4 P&L identity**: `net_pnl = pnl_price + pnl_funding − cost_total` verified within $0.01 for every trade.
+- **P&L identity**: `net_pnl = pnl_price + pnl_funding - cost_total` verified within $0.01 for every trade.
 - **16/16 unit tests passing** across signal, sizing, and backtest modules.
 - **Synthetic backtest**: strategy operates correctly with zero-API synthetic AR(1) funding data.
 
@@ -266,7 +267,7 @@ All results use $1M initial capital, BTCUSDT, 2020–2024.
 ## 10. Repository Structure
 
 ```
-strategy3/
+crypto-funding-reversal/
 ├── config.py                  # All parameters — single source of truth
 ├── run_backtest.py            # Main backtest entry point
 ├── run_dashboard.py           # Launch Plotly Dash dashboard
@@ -276,11 +277,7 @@ strategy3/
 ├── data/
 │   ├── fetcher.py             # Binance REST API fetcher (all datasets)
 │   ├── processor.py           # Master DataFrame builder + feature engineering
-│   └── raw/                   # Parquet cache (auto-created on first run)
-│       └── {SYMBOL}/
-│           ├── {SYMBOL}_funding.parquet
-│           ├── {SYMBOL}_klines_8h.parquet
-│           └── ...
+│   └── raw/                   # Parquet cache (auto-created on first run, gitignored)
 │
 ├── signals/
 │   ├── funding_zscore.py      # Rolling z-score + raw signal
@@ -291,7 +288,7 @@ strategy3/
 │
 ├── backtest/
 │   ├── engine.py              # Bar-by-bar simulation state machine
-│   └── metrics.py             # Full performance metrics (Section 5.10)
+│   └── metrics.py             # Full performance metrics
 │
 ├── dashboard/
 │   ├── app.py                 # Dash app factory
@@ -302,7 +299,7 @@ strategy3/
 │   ├── signal_monitor.py      # Settlement callback + ATR tick monitor
 │   └── order_manager.py       # Binance signed-API order execution
 │
-├── results/                   # Auto-created by run_backtest.py
+├── results/                   # Generated by run_backtest.py
 │   ├── {SYMBOL}_{IS/OOS}_master.parquet
 │   ├── {SYMBOL}_{IS/OOS}_trades.csv
 │   └── performance_summary.csv
@@ -326,13 +323,14 @@ strategy3/
 ### Install
 
 ```bash
-cd strategy3
+git clone https://github.com/williamchongtzejie/Crypto-Funding-Reversal.git
+cd Crypto-Funding-Reversal
 pip install -r requirements.txt
 ```
 
 ### API Keys (Live Trading Only)
 
-Create a `.env` file in the `strategy3/` directory:
+Create a `.env` file in the project root:
 
 ```
 BINANCE_API_KEY=your_api_key_here
@@ -446,7 +444,7 @@ All parameters live in `config.py` as a typed dataclass. No parameters are scatt
 |---|---|---|
 | `FUNDING_Z_WINDOW` | 90 | Rolling window for z-score (bars; 90 = 30 days) |
 | `Z_SHORT_ENTRY` | 2.0 | Z-score threshold to enter SHORT |
-| `Z_LONG_ENTRY` | −1.5 | Z-score threshold to enter LONG |
+| `Z_LONG_ENTRY` | -1.5 | Z-score threshold to enter LONG |
 | `Z_EXIT_BAND` | 0.5 | Z-score band for z-revert exit |
 | `ATR_PERIOD` | 14 | EWM span for ATR calculation |
 | `ATR_STOP_MULT` | 2.0 | ATR stop multiplier (2 × ATR at entry) |
@@ -487,7 +485,7 @@ All parameters live in `config.py` as a typed dataclass. No parameters are scatt
 
 ### Sizing
 
-**Full Kelly with drawdown penalty.** The current half-Kelly is a static discount. A dynamic penalty that scales the Kelly fraction inversely with current drawdown (`f_effective = f_half × (1 − dd / dd_threshold)`) would reduce size organically during losing streaks.
+**Full Kelly with drawdown penalty.** The current half-Kelly is a static discount. A dynamic penalty that scales the Kelly fraction inversely with current drawdown (`f_effective = f_half × (1 - dd / dd_threshold)`) would reduce size organically during losing streaks.
 
 **Per-trade expected value weighting.** Kelly sizing treats all signal occurrences equally. A logistic regression on historical features (z-score magnitude, basis level, time since last settlement, funding momentum) could assign a confidence score and scale size accordingly, replacing the binary vol scalar.
 
